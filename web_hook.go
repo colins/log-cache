@@ -224,7 +224,7 @@ func (h *WebHook) Start() {
 			h.sourceID,
 			logcache.Reader(h.reader),
 			h.interval,
-			3600,
+			0,
 		)
 
 		logcache.Window(

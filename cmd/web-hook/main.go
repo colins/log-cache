@@ -15,7 +15,6 @@ import (
 	"code.cloudfoundry.org/go-envstruct"
 	gologcache "code.cloudfoundry.org/go-log-cache"
 	"code.cloudfoundry.org/log-cache"
-	"google.golang.org/grpc"
 )
 
 func main() {
@@ -33,9 +32,11 @@ func main() {
 
 	client := gologcache.NewGroupReaderClient(
 		cfg.LogCacheAddr,
-		gologcache.WithViaGRPC(
-			grpc.WithTransportCredentials(cfg.TLS.Credentials("log-cache")),
-		),
+		gologcache.WithHTTPClient(gologcache.NewOauth2HTTPClient(
+			cfg.UAA.Addr,
+			cfg.UAA.ClientID,
+			cfg.UAA.ClientSecret,
+		)),
 	)
 
 	for _, t := range cfg.TemplatePaths {

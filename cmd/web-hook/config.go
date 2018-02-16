@@ -5,14 +5,14 @@ import (
 	"strings"
 
 	envstruct "code.cloudfoundry.org/go-envstruct"
-	"code.cloudfoundry.org/log-cache/internal/tls"
+	"code.cloudfoundry.org/log-cache/internal/uaa"
 )
 
 // Config is the configuration for a LogCache Gateway.
 type Config struct {
 	LogCacheAddr string `env:"LOG_CACHE_ADDR, required"`
 	HealthPort   int    `env:"HEALTH_PORT"`
-	TLS          tls.TLS
+	UAA          uaa.UAA
 
 	GroupPrefix string `env:"GROUP_PREFIX"`
 
