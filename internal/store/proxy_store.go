@@ -70,6 +70,7 @@ func (s *ProxyStore) Get(
 	// Remote
 	remote, ok := s.remotes[idx]
 	if !ok {
+		return nil
 		log.Panicf("Something went poorly. The map and lookup method are out of sync")
 	}
 
@@ -77,7 +78,7 @@ func (s *ProxyStore) Get(
 		SourceId:     sourceID,
 		StartTime:    start.UnixNano(),
 		EndTime:      end.UnixNano(),
-		EnvelopeType: s.convertEnvelopeType(envelopeType),
+		EnvelopeType: convertEnvelopeType(envelopeType),
 		Limit:        int64(limit),
 		Descending:   descending,
 	})
@@ -132,7 +133,7 @@ func (p *ProxyStore) metaFromRemote(remote rpc.EgressClient) map[string]MetaInfo
 	return meta
 }
 
-func (s *ProxyStore) convertEnvelopeType(t EnvelopeType) rpc.EnvelopeTypes {
+func convertEnvelopeType(t EnvelopeType) rpc.EnvelopeTypes {
 	switch t.(type) {
 	case *loggregator_v2.Log:
 		return rpc.EnvelopeTypes_LOG

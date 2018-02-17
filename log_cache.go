@@ -12,6 +12,7 @@ import (
 	"code.cloudfoundry.org/go-loggregator/rpc/loggregator_v2"
 	"code.cloudfoundry.org/log-cache/internal/egress"
 	"code.cloudfoundry.org/log-cache/internal/ingress"
+	"code.cloudfoundry.org/log-cache/internal/orchestrator"
 	"code.cloudfoundry.org/log-cache/internal/store"
 )
 
@@ -159,7 +160,7 @@ func (c *LogCache) setupRouting(s *store.Store) {
 		return crc64.Checksum([]byte(s), tableECMA)
 	}
 
-	lookup := ingress.NewStaticLookup(len(c.nodeAddrs), hasher)
+	lookup := orchestrator.NewRoutingTable(c.nodeAddrs, hasher)
 	ps := ingress.NewPubsub(lookup.Lookup)
 
 	// gRPC
@@ -171,6 +172,7 @@ func (c *LogCache) setupRouting(s *store.Store) {
 	c.log.Printf("listening on %s...", c.Addr())
 
 	egressClients := make(map[int]logcache.EgressClient)
+	egressByAddr := make(map[string]logcache.EgressClient)
 
 	// Register peers and current node
 	for i, addr := range c.nodeAddrs {
@@ -184,15 +186,35 @@ func (c *LogCache) setupRouting(s *store.Store) {
 		writer := egress.NewPeerWriter(addr, c.dialOpts...)
 		ps.Subscribe(i, writer.Write)
 		egressClients[i] = writer
+		egressByAddr[addr] = writer
 	}
 
-	c.proxy = store.NewProxyStore(s, c.nodeIndex, egressClients, lookup.Lookup)
+	copier := store.NewCopier(s, func(sourceID string) []logcache.EgressClient {
+		var r []logcache.EgressClient
+		for _, i := range lookup.LookupAll(sourceID) {
+			if i == c.nodeIndex {
+				continue
+			}
+
+			r = append(r, egressClients[i])
+		}
+		return r
+	}, c.log)
+
+	c.proxy = store.NewProxyStore(copier, c.nodeIndex, egressClients, lookup.Lookup)
 
 	go func() {
 		peerReader := ingress.NewPeerReader(ps.Publish, c.proxy)
 		srv := grpc.NewServer(c.serverOpts...)
 		logcache.RegisterIngressServer(srv, peerReader)
 		logcache.RegisterEgressServer(srv, peerReader)
+		logcache.RegisterOrchestrationServer(srv, struct {
+			*orchestrator.Orchestrator
+			*orchestrator.RoutingTable
+		}{
+			Orchestrator: orchestrator.New(hasher, s),
+			RoutingTable: lookup,
+		})
 		if err := srv.Serve(lis); err != nil {
 			log.Fatalf("failed to serve gRPC ingress server: %s", err)
 		}

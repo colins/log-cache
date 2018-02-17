@@ -28,7 +28,8 @@ type LookUp func(sourceID string) int
 func (s *Pubsub) Publish(e *loggregator_v2.Envelope) {
 	v, ok := s.subscribers.Load(s.lookup(e.SourceId))
 	if !ok {
-		panic("Something has gone poorly. This map is populated ahead of time with known values and this should never happen")
+		return
+		// panic("Something has gone poorly. This map is populated ahead of time with known values and this should never happen")
 	}
 	v.(Subscription)(e)
 }

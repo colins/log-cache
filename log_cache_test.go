@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"fmt"
 	"io/ioutil"
 	"log"
 	"net"
@@ -42,6 +43,7 @@ var _ = Describe("LogCache", func() {
 		spyMetrics := newSpyMetrics()
 		cache := logcache.New(
 			logcache.WithAddr("127.0.0.1:0"),
+			logcache.WithClustered(0, []string{"my-addr"}),
 			logcache.WithMetrics(spyMetrics),
 			logcache.WithServerOpts(
 				grpc.Creds(credentials.NewTLS(tlsConfig)),
@@ -49,19 +51,31 @@ var _ = Describe("LogCache", func() {
 		)
 		cache.Start()
 
-		writeEnvelopes(cache.Addr(), []*loggregator_v2.Envelope{
-			{Timestamp: 1, SourceId: "app-a"},
-			{Timestamp: 2, SourceId: "app-b"},
-			{Timestamp: 3, SourceId: "app-a"},
-			{Timestamp: 4, SourceId: "app-a"},
-		})
-
 		conn, err := grpc.Dial(cache.Addr(),
 			grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)),
 		)
 		Expect(err).ToNot(HaveOccurred())
 		defer conn.Close()
 		client := rpc.NewEgressClient(conn)
+		orchClient := rpc.NewOrchestrationClient(conn)
+
+		_, err = orchClient.SetRanges(context.Background(), &rpc.SetRangesRequest{
+			Ranges: map[string]*rpc.Ranges{
+				"my-addr": &rpc.Ranges{
+					Ranges: []*rpc.Range{
+						{Start: 0, End: 18446744073709551615},
+					},
+				},
+			},
+		})
+		Expect(err).ToNot(HaveOccurred())
+
+		writeEnvelopes(cache.Addr(), []*loggregator_v2.Envelope{
+			{Timestamp: 1, SourceId: "app-a"},
+			{Timestamp: 2, SourceId: "app-b"},
+			{Timestamp: 3, SourceId: "app-a"},
+			{Timestamp: 4, SourceId: "app-a"},
+		})
 
 		var es []*loggregator_v2.Envelope
 		f := func() error {
@@ -92,6 +106,74 @@ var _ = Describe("LogCache", func() {
 		Eventually(spyMetrics.getter("Egress")).Should(Equal(uint64(2)))
 	})
 
+	It("copies envelopes from a peer if they from an older route", func() {
+		peer := newSpyLogCache(tlsConfig)
+		peerAddr := peer.start()
+
+		cache := logcache.New(
+			logcache.WithAddr("127.0.0.1:0"),
+			logcache.WithClustered(0, []string{"my-addr", peerAddr},
+				grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)),
+			),
+			logcache.WithServerOpts(
+				grpc.Creds(credentials.NewTLS(tlsConfig)),
+			),
+		)
+		cache.Start()
+
+		conn, err := grpc.Dial(cache.Addr(),
+			grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)),
+		)
+		Expect(err).ToNot(HaveOccurred())
+		defer conn.Close()
+		client := rpc.NewEgressClient(conn)
+		orchClient := rpc.NewOrchestrationClient(conn)
+
+		_, err = orchClient.SetRanges(context.Background(), &rpc.SetRangesRequest{
+			Ranges: map[string]*rpc.Ranges{
+				"my-addr": &rpc.Ranges{
+					Ranges: []*rpc.Range{
+						{Start: 0, End: 9223372036854775807, Term: 2},
+					},
+				},
+				peerAddr: &rpc.Ranges{
+					Ranges: []*rpc.Range{
+						{Start: 0, End: 9223372036854775807, Term: 1},
+						{Start: 9223372036854775808, End: 18446744073709551615, Term: 2},
+					},
+				},
+			},
+		})
+		Expect(err).ToNot(HaveOccurred())
+
+		peer.readEnvelopes["source-0"] = func() []*loggregator_v2.Envelope {
+			return []*loggregator_v2.Envelope{
+				{Timestamp: 2, SourceId: "source-0"},
+			}
+		}
+
+		writeEnvelopes(cache.Addr(), []*loggregator_v2.Envelope{
+			// source-0 hashes to 7700738999732113484 (route to node 0)
+			{Timestamp: 1, SourceId: "source-0"},
+		})
+
+		Eventually(func() error {
+			resp, err := client.Read(context.Background(), &rpc.ReadRequest{
+				SourceId: "source-0",
+				Limit:    2,
+			})
+			if err != nil {
+				return err
+			}
+
+			if len(resp.Envelopes.Batch) != 2 {
+				return fmt.Errorf("expected 2 envelopes: %d", len(resp.Envelopes.Batch))
+			}
+
+			return nil
+		}).Should(BeNil())
+	})
+
 	It("routes envelopes to peers", func() {
 		peer := newSpyLogCache(tlsConfig)
 		peerAddr := peer.start()
@@ -106,6 +188,32 @@ var _ = Describe("LogCache", func() {
 			),
 		)
 		cache.Start()
+
+		conn, err := grpc.Dial(cache.Addr(),
+			grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)),
+		)
+		Expect(err).ToNot(HaveOccurred())
+		defer conn.Close()
+		orchClient := rpc.NewOrchestrationClient(conn)
+
+		_, err = orchClient.SetRanges(context.Background(), &rpc.SetRangesRequest{
+			Ranges: map[string]*rpc.Ranges{
+				"my-addr": &rpc.Ranges{
+					Ranges: []*rpc.Range{
+						{Start: 0, End: 9223372036854775807, Term: 2},
+
+						// Has older term and should be ignored
+						{Start: 9223372036854775808, End: 18446744073709551615, Term: 1},
+					},
+				},
+				peerAddr: &rpc.Ranges{
+					Ranges: []*rpc.Range{
+						{Start: 9223372036854775808, End: 18446744073709551615, Term: 2},
+					},
+				},
+			},
+		})
+		Expect(err).ToNot(HaveOccurred())
 
 		writeEnvelopes(cache.Addr(), []*loggregator_v2.Envelope{
 			// source-0 hashes to 7700738999732113484 (route to node 0)
@@ -132,6 +240,25 @@ var _ = Describe("LogCache", func() {
 		)
 		cache.Start()
 
+		conn, err := grpc.Dial(cache.Addr(),
+			grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)),
+		)
+		Expect(err).ToNot(HaveOccurred())
+		defer conn.Close()
+		client := rpc.NewEgressClient(conn)
+		orchClient := rpc.NewOrchestrationClient(conn)
+
+		_, err = orchClient.SetRanges(context.Background(), &rpc.SetRangesRequest{
+			Ranges: map[string]*rpc.Ranges{
+				"my-addr": &rpc.Ranges{
+					Ranges: []*rpc.Range{
+						{Start: 0, End: 18446744073709551615},
+					},
+				},
+			},
+		})
+		Expect(err).ToNot(HaveOccurred())
+
 		peerWriter := egress.NewPeerWriter(
 			cache.Addr(),
 			grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)),
@@ -139,13 +266,6 @@ var _ = Describe("LogCache", func() {
 
 		// source-0 hashes to 7700738999732113484 (route to node 0)
 		peerWriter.Write(&loggregator_v2.Envelope{SourceId: "source-0", Timestamp: 1})
-
-		conn, err := grpc.Dial(cache.Addr(),
-			grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)),
-		)
-		Expect(err).ToNot(HaveOccurred())
-		defer conn.Close()
-		client := rpc.NewEgressClient(conn)
 
 		var es []*loggregator_v2.Envelope
 		f := func() error {
@@ -197,6 +317,26 @@ var _ = Describe("LogCache", func() {
 		Expect(err).ToNot(HaveOccurred())
 		defer conn.Close()
 		client := rpc.NewEgressClient(conn)
+		orchClient := rpc.NewOrchestrationClient(conn)
+
+		_, err = orchClient.SetRanges(context.Background(), &rpc.SetRangesRequest{
+			Ranges: map[string]*rpc.Ranges{
+				"my-addr": &rpc.Ranges{
+					Ranges: []*rpc.Range{
+						{Start: 0, End: 9223372036854775807, Term: 2},
+
+						// Has older term and should be ignored
+						{Start: 9223372036854775808, End: 18446744073709551615, Term: 1},
+					},
+				},
+				peerAddr: &rpc.Ranges{
+					Ranges: []*rpc.Range{
+						{Start: 9223372036854775808, End: 18446744073709551615, Term: 2},
+					},
+				},
+			},
+		})
+		Expect(err).ToNot(HaveOccurred())
 
 		// source-1 hashes to 15704273932878139171 (route to node 1)
 		resp, err := client.Read(context.Background(), &rpc.ReadRequest{
@@ -249,6 +389,26 @@ var _ = Describe("LogCache", func() {
 		defer conn.Close()
 		ingressClient := rpc.NewIngressClient(conn)
 		egressClient := rpc.NewEgressClient(conn)
+		orchClient := rpc.NewOrchestrationClient(conn)
+
+		_, err = orchClient.SetRanges(context.Background(), &rpc.SetRangesRequest{
+			Ranges: map[string]*rpc.Ranges{
+				myAddr: &rpc.Ranges{
+					Ranges: []*rpc.Range{
+						{Start: 0, End: 9223372036854775807, Term: 2},
+
+						// Has older term and should be ignored
+						{Start: 9223372036854775808, End: 18446744073709551615, Term: 1},
+					},
+				},
+				peerAddr: &rpc.Ranges{
+					Ranges: []*rpc.Range{
+						{Start: 9223372036854775808, End: 18446744073709551615, Term: 2},
+					},
+				},
+			},
+		})
+		Expect(err).ToNot(HaveOccurred())
 
 		sendRequest := &rpc.SendRequest{
 			Envelopes: &loggregator_v2.EnvelopeBatch{
@@ -277,6 +437,47 @@ var _ = Describe("LogCache", func() {
 				NewestTimestamp: 4,
 			}),
 		))
+	})
+
+	Describe("orchestration", func() {
+		var (
+			orchClient rpc.OrchestrationClient
+		)
+
+		BeforeEach(func() {
+			cache := logcache.New(
+				logcache.WithAddr("127.0.0.1:0"),
+			)
+			cache.Start()
+
+			conn, err := grpc.Dial(cache.Addr(), grpc.WithInsecure())
+			Expect(err).ToNot(HaveOccurred())
+			orchClient = rpc.NewOrchestrationClient(conn)
+		})
+
+		It("returns only the latest ranges", func() {
+			resp, err := orchClient.ListRanges(context.Background(), &rpc.ListRangesRequest{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(resp.Ranges).To(HaveLen(0))
+
+			orchClient.AddRange(context.Background(), &rpc.AddRangeRequest{
+				Range: &rpc.Range{
+					Start: 0,
+					End:   100,
+				},
+			})
+
+			orchClient.AddRange(context.Background(), &rpc.AddRangeRequest{
+				Range: &rpc.Range{
+					Start: 101,
+					End:   200,
+				},
+			})
+
+			resp, err = orchClient.ListRanges(context.Background(), &rpc.ListRangesRequest{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(resp.Ranges).To(HaveLen(2))
+		})
 	})
 })
 

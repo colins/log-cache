@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"errors"
+	"sync"
 	"time"
 
 	rpc "code.cloudfoundry.org/go-log-cache/rpc/logcache"
@@ -30,7 +31,7 @@ var _ = Describe("ProxyStore", func() {
 
 	BeforeEach(func() {
 		localIndex := 1
-		local = newSpyGetter()
+		local = newSpyLocalStore()
 		lookup = newSpyLookup()
 		egressClient = newSpyEgressClient()
 		remotes = map[int]rpc.EgressClient{
@@ -195,6 +196,7 @@ var _ = Describe("ProxyStore", func() {
 })
 
 type spyLocalStore struct {
+	mu           sync.Mutex
 	sourceID     string
 	start        time.Time
 	end          time.Time
@@ -203,9 +205,12 @@ type spyLocalStore struct {
 	descending   bool
 	result       []*loggregator_v2.Envelope
 	metaResult   map[string]store.MetaInfo
+
+	envelopes []*loggregator_v2.Envelope
+	indexes   []string
 }
 
-func newSpyGetter() *spyLocalStore {
+func newSpyLocalStore() *spyLocalStore {
 	return &spyLocalStore{}
 }
 
@@ -217,6 +222,9 @@ func (s *spyLocalStore) Get(
 	limit int,
 	descending bool,
 ) []*loggregator_v2.Envelope {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	s.sourceID = sourceID
 	s.start = start
 	s.end = end
@@ -230,12 +238,39 @@ func (s *spyLocalStore) Meta() map[string]store.MetaInfo {
 	return s.metaResult
 }
 
+func (s *spyLocalStore) Put(e *loggregator_v2.Envelope, index string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.envelopes = append(s.envelopes, e)
+	s.indexes = append(s.indexes, index)
+}
+
+func (s *spyLocalStore) Envelopes() []*loggregator_v2.Envelope {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	es := make([]*loggregator_v2.Envelope, len(s.envelopes))
+	copy(es, s.envelopes)
+	return es
+}
+
+func (s *spyLocalStore) Indexes() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	es := make([]string, len(s.indexes))
+	copy(es, s.indexes)
+	return es
+}
+
 type spyEgressClient struct {
+	mu           sync.Mutex
 	requests     []*rpc.ReadRequest
 	results      []*loggregator_v2.Envelope
 	metaRequests []*rpc.MetaRequest
 	metaResults  map[string]*rpc.MetaInfo
 	metaErr      error
+	readBlock    bool
 }
 
 func newSpyEgressClient() *spyEgressClient {
@@ -243,12 +278,28 @@ func newSpyEgressClient() *spyEgressClient {
 }
 
 func (s *spyEgressClient) Read(ctx context.Context, in *rpc.ReadRequest, opts ...grpc.CallOption) (*rpc.ReadResponse, error) {
+	if s.readBlock {
+		var c chan int
+		<-c
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	s.requests = append(s.requests, in)
 	return &rpc.ReadResponse{
 		Envelopes: &loggregator_v2.EnvelopeBatch{
 			Batch: s.results,
 		},
 	}, nil
+}
+
+func (s *spyEgressClient) Requests() []*rpc.ReadRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rs := make([]*rpc.ReadRequest, len(s.requests))
+	copy(rs, s.requests)
+	return rs
 }
 
 func (s *spyEgressClient) Meta(ctx context.Context, r *rpc.MetaRequest, opts ...grpc.CallOption) (*rpc.MetaResponse, error) {
