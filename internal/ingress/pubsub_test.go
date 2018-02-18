@@ -1,6 +1,10 @@
 package ingress_test
 
 import (
+	"io/ioutil"
+	"log"
+
+	rpc "code.cloudfoundry.org/go-log-cache/rpc/logcache"
 	"code.cloudfoundry.org/go-loggregator/rpc/loggregator_v2"
 	"code.cloudfoundry.org/log-cache/internal/ingress"
 
@@ -10,42 +14,76 @@ import (
 
 var _ = Describe("Pubsub", func() {
 	var (
+		spyWriterFetcher *spyWriterFetcher
+		spyWriter1       *spyWriter
+		spyWriter2       *spyWriter
+
 		r *ingress.Pubsub
 
 		lookupSourceID string
-		lookupResult   int
+		lookupResult   string
 	)
 
 	BeforeEach(func() {
-		lookup := func(sourceID string) int {
+		lookup := func(sourceID string) string {
 			lookupSourceID = sourceID
 			return lookupResult
 		}
 
-		r = ingress.NewPubsub(lookup)
+		spyWriter1 = newSpyWriter()
+		spyWriter2 = newSpyWriter()
+		spyWriterFetcher = newSpyWriterFetcher()
+		spyWriterFetcher.m["a"] = spyWriter1
+		spyWriterFetcher.m["b"] = spyWriter2
+
+		r = ingress.NewPubsub(lookup, spyWriterFetcher.Fetch, log.New(ioutil.Discard, "", 0))
 	})
 
 	It("routes data via lookup function", func() {
-		var (
-			a, b   int
-			actual *loggregator_v2.Envelope
-		)
-		r.Subscribe(0, func(_ *loggregator_v2.Envelope) {
-			a++
-		})
-
-		r.Subscribe(1, func(e *loggregator_v2.Envelope) {
-			actual = e
-			b++
-		})
-
-		lookupResult = 1
+		lookupResult = "a"
 		expected := &loggregator_v2.Envelope{SourceId: "some-id"}
 		r.Publish(expected)
 
-		Expect(a).To(Equal(0))
-		Expect(b).To(Equal(1))
-		Expect(actual).To(Equal(expected))
+		Expect(spyWriterFetcher.addrs).To(ConsistOf("a"))
 		Expect(lookupSourceID).To(Equal("some-id"))
+		Expect(spyWriter1.es).To(ConsistOf(expected))
+	})
+
+	It("does not write data that does not resolve to a route", func() {
+		lookupResult = ""
+		expected := &loggregator_v2.Envelope{SourceId: "some-id"}
+		r.Publish(expected)
+
+		Expect(spyWriterFetcher.addrs).To(HaveLen(0))
 	})
 })
+
+type spyWriterFetcher struct {
+	addrs []string
+	m     map[string]*spyWriter
+}
+
+func newSpyWriterFetcher() *spyWriterFetcher {
+	return &spyWriterFetcher{
+		m: make(map[string]*spyWriter),
+	}
+}
+
+func (s *spyWriterFetcher) Fetch(addr string) func(*loggregator_v2.Envelope) {
+	s.addrs = append(s.addrs, addr)
+	return s.m[addr].Write
+}
+
+type spyWriter struct {
+	rpc.IngressClient
+
+	es []*loggregator_v2.Envelope
+}
+
+func newSpyWriter() *spyWriter {
+	return &spyWriter{}
+}
+
+func (s *spyWriter) Write(e *loggregator_v2.Envelope) {
+	s.es = append(s.es, e)
+}

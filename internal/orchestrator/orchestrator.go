@@ -10,7 +10,7 @@ import (
 
 // Orchestrator manages the Log Cache node's routes.
 type Orchestrator struct {
-	mu     sync.Mutex
+	mu     sync.RWMutex
 	ranges []rpc.Range
 
 	f      MetaFetcher
@@ -91,6 +91,15 @@ func (o *Orchestrator) ListRanges(ctx context.Context, r *rpc.ListRangesRequest)
 	return &rpc.ListRangesResponse{
 		Ranges: ranges,
 	}, nil
+}
+
+func (o *Orchestrator) LastRanges() []rpc.Range {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+
+	r := make([]rpc.Range, len(o.ranges))
+	copy(r, o.ranges)
+	return r
 }
 
 func (o *Orchestrator) findRange(h uint64, rs []*rpc.Range) int {

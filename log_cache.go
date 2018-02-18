@@ -5,6 +5,7 @@ import (
 	"io/ioutil"
 	"log"
 	"net"
+	"sync"
 
 	"google.golang.org/grpc"
 
@@ -30,13 +31,6 @@ type LogCache struct {
 	// Cluster Properties
 	addr     string
 	dialOpts []grpc.DialOption
-
-	// nodeAddrs are the addresses of all the nodes (including the current
-	// node). The index corresponds with the nodeIndex. It defaults to a
-	// single bogus address so the node will not attempt to route data
-	// externally and instead will store all of it.
-	nodeAddrs []string
-	nodeIndex int
 }
 
 // NewLogCache creates a new LogCache.
@@ -46,11 +40,8 @@ func New(opts ...LogCacheOption) *LogCache {
 		metrics:      nopMetrics{},
 		maxPerSource: 100000,
 		min:          500000,
-
-		// Defaults to a single entry. The default does not route data.
-		nodeAddrs: []string{"bogus-address"},
-		nodeIndex: 0,
-		addr:      ":8080",
+		addr:         ":8080",
+		dialOpts:     []grpc.DialOption{grpc.WithInsecure()},
 	}
 
 	for _, o := range opts {
@@ -104,16 +95,10 @@ func WithMinimumSize(min int) LogCacheOption {
 	}
 }
 
-// WithClustered enables the LogCache to route data to peer nodes. It hashes
-// each envelope by SourceId and routes data that does not belong on the node
-// to the correct node. NodeAddrs is a slice of node addresses where the slice
-// index corresponds to the NodeIndex. The current node's address is included.
-// The default is standalone mode where the LogCache will store all the data
-// and forward none of it.
-func WithClustered(nodeIndex int, nodeAddrs []string, opts ...grpc.DialOption) LogCacheOption {
+// WithDialOpts are the gRPC options used to dial peer Log Cache nodes. It
+// defaults to WithInsecure().
+func WithDialOpts(opts ...grpc.DialOption) LogCacheOption {
 	return func(c *LogCache) {
-		c.nodeIndex = nodeIndex
-		c.nodeAddrs = nodeAddrs
 		c.dialOpts = opts
 	}
 }
@@ -160,9 +145,6 @@ func (c *LogCache) setupRouting(s *store.Store) {
 		return crc64.Checksum([]byte(s), tableECMA)
 	}
 
-	lookup := orchestrator.NewRoutingTable(c.nodeAddrs, hasher)
-	ps := ingress.NewPubsub(lookup.Lookup)
-
 	// gRPC
 	lis, err := net.Listen("tcp", c.addr)
 	if err != nil {
@@ -171,37 +153,33 @@ func (c *LogCache) setupRouting(s *store.Store) {
 	c.lis = lis
 	c.log.Printf("listening on %s...", c.Addr())
 
-	egressClients := make(map[int]logcache.EgressClient)
-	egressByAddr := make(map[string]logcache.EgressClient)
-
-	// Register peers and current node
-	for i, addr := range c.nodeAddrs {
-		if i == c.nodeIndex {
-			ps.Subscribe(i, func(e *loggregator_v2.Envelope) {
+	orch := orchestrator.New(hasher, s)
+	localAddr := c.lis.Addr().String()
+	lookup := orchestrator.NewRoutingTable(hasher, localAddr, orch.LastRanges)
+	remotes := newRemotes(localAddr, lookup, c.dialOpts)
+	ps := ingress.NewPubsub(lookup.Lookup, func(addr string) func(e *loggregator_v2.Envelope) {
+		if addr == localAddr {
+			return func(e *loggregator_v2.Envelope) {
 				s.Put(e, e.GetSourceId())
-			})
-			continue
+			}
 		}
 
-		writer := egress.NewPeerWriter(addr, c.dialOpts...)
-		ps.Subscribe(i, writer.Write)
-		egressClients[i] = writer
-		egressByAddr[addr] = writer
-	}
+		return remotes.peerWriter(addr).Write
+	}, c.log)
 
 	copier := store.NewCopier(s, func(sourceID string) []logcache.EgressClient {
 		var r []logcache.EgressClient
-		for _, i := range lookup.LookupAll(sourceID) {
-			if i == c.nodeIndex {
+		for _, addr := range lookup.LookupAll(sourceID) {
+			if addr == c.addr {
 				continue
 			}
 
-			r = append(r, egressClients[i])
+			r = append(r, remotes.peerWriter(addr))
 		}
 		return r
 	}, c.log)
 
-	c.proxy = store.NewProxyStore(copier, c.nodeIndex, egressClients, lookup.Lookup)
+	c.proxy = store.NewProxyStore(copier, remotes)
 
 	go func() {
 		peerReader := ingress.NewPeerReader(ps.Publish, c.proxy)
@@ -212,7 +190,7 @@ func (c *LogCache) setupRouting(s *store.Store) {
 			*orchestrator.Orchestrator
 			*orchestrator.RoutingTable
 		}{
-			Orchestrator: orchestrator.New(hasher, s),
+			Orchestrator: orch,
 			RoutingTable: lookup,
 		})
 		if err := srv.Serve(lis); err != nil {
@@ -225,4 +203,57 @@ func (c *LogCache) setupRouting(s *store.Store) {
 // valid after Start has been invoked.
 func (c *LogCache) Addr() string {
 	return c.lis.Addr().String()
+}
+
+type remotes struct {
+	mu        sync.Mutex
+	m         map[string]*egress.PeerWriter
+	t         *orchestrator.RoutingTable
+	localAddr string
+	dialOpts  []grpc.DialOption
+}
+
+func newRemotes(localAddr string, t *orchestrator.RoutingTable, dialOpts []grpc.DialOption) *remotes {
+	return &remotes{
+		m:         make(map[string]*egress.PeerWriter),
+		t:         t,
+		dialOpts:  dialOpts,
+		localAddr: localAddr,
+	}
+}
+
+func (r *remotes) Lookup(sourceID string) (logcache.EgressClient, bool) {
+	addr := r.t.Lookup(sourceID)
+	if addr == r.localAddr {
+		return nil, false
+	}
+
+	return r.peerWriter(addr), true
+}
+
+func (r *remotes) AllClients() []logcache.EgressClient {
+	addrs := r.t.ListAllNodes()
+
+	var c []logcache.EgressClient
+
+	for _, addr := range addrs {
+		if addr == r.localAddr {
+			continue
+		}
+
+		c = append(c, r.peerWriter(addr))
+	}
+
+	return c
+}
+
+func (r *remotes) peerWriter(addr string) *egress.PeerWriter {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	pw, ok := r.m[addr]
+	if !ok {
+		pw = egress.NewPeerWriter(addr, r.dialOpts...)
+		r.m[addr] = pw
+	}
+	return pw
 }

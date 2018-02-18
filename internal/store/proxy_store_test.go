@@ -18,32 +18,23 @@ import (
 
 var _ = Describe("ProxyStore", func() {
 	var (
-		remotes      map[int]rpc.EgressClient
-		lookup       *spyLookup
+		remotes      *spyRemotes
 		local        *spyLocalStore
 		egressClient *spyEgressClient
-
-		remoteIndex = 0
-		localIndex  = 1
 
 		proxy *store.ProxyStore
 	)
 
 	BeforeEach(func() {
-		localIndex := 1
 		local = newSpyLocalStore()
-		lookup = newSpyLookup()
 		egressClient = newSpyEgressClient()
-		remotes = map[int]rpc.EgressClient{
-			remoteIndex: egressClient,
-			localIndex:  nil,
-		}
+		remotes = newSpyRemotes()
 
-		proxy = store.NewProxyStore(local, 1, remotes, lookup.Lookup)
+		proxy = store.NewProxyStore(local, remotes)
 	})
 
-	It("gets data from the local store for its index", func() {
-		lookup.result = localIndex
+	It("gets data from the local store for its address", func() {
+		remotes.lookupIsRemote = false
 		local.result = []*loggregator_v2.Envelope{
 			{Timestamp: 1},
 		}
@@ -59,11 +50,12 @@ var _ = Describe("ProxyStore", func() {
 		Expect(local.limit).To(Equal(101))
 		Expect(local.descending).To(BeTrue())
 
-		Expect(lookup.sourceID).To(Equal("some-source"))
+		Expect(remotes.lookupSourceID).To(Equal("some-source"))
 	})
 
 	It("gets data from the remote store for its index", func() {
-		lookup.result = remoteIndex
+		remotes.lookupIsRemote = true
+		remotes.lookupClient = egressClient
 		egressClient.results = []*loggregator_v2.Envelope{
 			{Timestamp: 1},
 		}
@@ -81,11 +73,17 @@ var _ = Describe("ProxyStore", func() {
 		Expect(req.Limit).To(Equal(int64(101)))
 		Expect(req.Descending).To(BeTrue())
 
-		Expect(lookup.sourceID).To(Equal("some-source"))
+		Expect(remotes.lookupSourceID).To(Equal("some-source"))
+	})
+
+	It("returns empty results for a nil EgressClient", func() {
+		remotes.lookupIsRemote = true
+		remotes.lookupClient = nil
+		result := proxy.Get("some-source", time.Unix(0, 99), time.Unix(0, 100), nil, 101, true)
+		Expect(result).To(HaveLen(0))
 	})
 
 	It("gets sourceIds from the local store", func() {
-		lookup.result = localIndex
 		local.metaResult = map[string]store.MetaInfo{
 			"source-1": store.MetaInfo{
 				Count:   1,
@@ -134,7 +132,9 @@ var _ = Describe("ProxyStore", func() {
 			},
 		}
 
-		lookup.result = remoteIndex
+		remotes.lookupIsRemote = true
+		remotes.allClients = append(remotes.allClients, egressClient)
+
 		egressClient.metaResults = map[string]*rpc.MetaInfo{
 			"source-3": &rpc.MetaInfo{
 				Count:           9,
@@ -169,7 +169,8 @@ var _ = Describe("ProxyStore", func() {
 	})
 
 	It("gets sourceIds as empty list the remotes have an error", func() {
-		lookup.result = remoteIndex
+		remotes.lookupIsRemote = true
+		remotes.allClients = append(remotes.allClients, egressClient)
 		egressClient.metaErr = errors.New("errors")
 
 		sourceIds := proxy.Meta(false)
@@ -177,7 +178,8 @@ var _ = Describe("ProxyStore", func() {
 	})
 
 	DescribeTable("envelope types", func(t store.EnvelopeType, expected rpc.EnvelopeTypes) {
-		lookup.result = remoteIndex
+		remotes.lookupIsRemote = true
+		remotes.lookupClient = egressClient
 		egressClient.results = []*loggregator_v2.Envelope{
 			{Timestamp: 1},
 		}
@@ -192,7 +194,6 @@ var _ = Describe("ProxyStore", func() {
 		Entry("gauge", &loggregator_v2.Gauge{}, rpc.EnvelopeTypes_GAUGE),
 		Entry("timer", &loggregator_v2.Timer{}, rpc.EnvelopeTypes_TIMER),
 		Entry("event", &loggregator_v2.Event{}, rpc.EnvelopeTypes_EVENT))
-
 })
 
 type spyLocalStore struct {
@@ -314,16 +315,23 @@ func (s *spyEgressClient) Meta(ctx context.Context, r *rpc.MetaRequest, opts ...
 	}, s.metaErr
 }
 
-type spyLookup struct {
-	sourceID string
-	result   int
+type spyRemotes struct {
+	lookupSourceID string
+	lookupClient   rpc.EgressClient
+	lookupIsRemote bool
+
+	allClients []rpc.EgressClient
 }
 
-func newSpyLookup() *spyLookup {
-	return &spyLookup{}
+func newSpyRemotes() *spyRemotes {
+	return &spyRemotes{}
 }
 
-func (s *spyLookup) Lookup(sourceID string) int {
-	s.sourceID = sourceID
-	return s.result
+func (s *spyRemotes) Lookup(sourceID string) (rpc.EgressClient, bool) {
+	s.lookupSourceID = sourceID
+	return s.lookupClient, s.lookupIsRemote
+}
+
+func (s *spyRemotes) AllClients() []rpc.EgressClient {
+	return s.allClients
 }

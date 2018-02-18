@@ -146,6 +146,7 @@ func (f *spyMetaFetcher) Meta() map[string]store.MetaInfo {
 }
 
 type spyHasher struct {
+	mu      sync.Mutex
 	ids     []string
 	results []uint64
 }
@@ -155,6 +156,8 @@ func newSpyHasher() *spyHasher {
 }
 
 func (s *spyHasher) Hash(id string) uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.ids = append(s.ids, id)
 
 	if len(s.results) == 0 {

@@ -13,9 +13,7 @@ import (
 // ProxyStore finds what store has the desired data to read from.
 type ProxyStore struct {
 	local   LocalStore
-	remotes RemoteNodes
-	lookup  Lookup
-	index   int
+	remotes Remotes
 }
 
 // LocalStore can return envelopes or Log Cache Metadata.
@@ -35,21 +33,21 @@ type LocalStore interface {
 }
 
 // NewProxyStore creates and returns a ProxyStore.
-func NewProxyStore(local LocalStore, index int, remotes RemoteNodes, lookup Lookup) *ProxyStore {
+func NewProxyStore(local LocalStore, r Remotes) *ProxyStore {
 	return &ProxyStore{
 		local:   local,
-		remotes: remotes,
-		lookup:  lookup,
-		index:   index,
+		remotes: r,
 	}
 }
 
-// RemoteNodes are used to reach out to other LogCache nodes for data. They
-// are indexed based on their index that corresponds to SourceID lookups.
-type RemoteNodes map[int]rpc.EgressClient
+// Remotes returns information from remote nodes.
+type Remotes interface {
+	// Lookup is used to determine what LogCache a sourceID is stored.
+	Lookup(sourceID string) (rpc.EgressClient, bool)
 
-// Lookup is used to determine what LogCache a sourceID is stored.
-type Lookup func(sourceID string) int
+	// AllClients returns all the EgressClients.
+	AllClients() []rpc.EgressClient
+}
 
 // Get looks at the sourceID and either reads from the local store or proxies
 // the request to the correct node.
@@ -61,17 +59,15 @@ func (s *ProxyStore) Get(
 	limit int,
 	descending bool,
 ) []*loggregator_v2.Envelope {
-	idx := s.lookup(sourceID)
-	if s.index == idx {
+	remote, isRemote := s.remotes.Lookup(sourceID)
+	if !isRemote {
 		// Local
 		return s.local.Get(sourceID, start, end, envelopeType, limit, descending)
 	}
 
-	// Remote
-	remote, ok := s.remotes[idx]
-	if !ok {
+	if remote == nil {
+		// TODO: metric for unroutable
 		return nil
-		log.Panicf("Something went poorly. The map and lookup method are out of sync")
 	}
 
 	resp, err := remote.Read(context.Background(), &rpc.ReadRequest{
@@ -97,7 +93,7 @@ func (p *ProxyStore) Meta(localOnly bool) map[string]MetaInfo {
 		return meta
 	}
 
-	for _, r := range p.remotes {
+	for _, r := range p.remotes.AllClients() {
 		for k, v := range p.metaFromRemote(r) {
 			meta[k] = v
 		}

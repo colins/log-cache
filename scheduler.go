@@ -19,6 +19,7 @@ type Scheduler struct {
 	interval time.Duration
 	count    int
 	orch     *orchestrator.Orchestrator
+	dialOpts []grpc.DialOption
 
 	logCaches []logCacheInfo
 }
@@ -32,6 +33,7 @@ func NewScheduler(logCaches []string, opts ...SchedulerOption) *Scheduler {
 		interval: time.Minute,
 		count:    100,
 		orch:     orchestrator.New(&comm{}),
+		dialOpts: []grpc.DialOption{grpc.WithInsecure()},
 	}
 
 	for _, o := range opts {
@@ -39,7 +41,7 @@ func NewScheduler(logCaches []string, opts ...SchedulerOption) *Scheduler {
 	}
 
 	for _, addr := range logCaches {
-		conn, err := grpc.Dial(addr, grpc.WithInsecure())
+		conn, err := grpc.Dial(addr, s.dialOpts...)
 		if err != nil {
 			s.log.Panic(err)
 		}
@@ -81,6 +83,14 @@ func WithSchedulerInterval(interval time.Duration) SchedulerOption {
 func WithSchedulerCount(count int) SchedulerOption {
 	return func(s *Scheduler) {
 		s.count = count
+	}
+}
+
+// WithSchedulerDialOpts are the gRPC options used to dial peer Log Cache
+// nodes. It defaults to WithInsecure().
+func WithSchedulerDialOpts(opts ...grpc.DialOption) SchedulerOption {
+	return func(s *Scheduler) {
+		s.dialOpts = opts
 	}
 }
 

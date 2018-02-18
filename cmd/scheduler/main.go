@@ -11,6 +11,7 @@ import (
 	"code.cloudfoundry.org/go-envstruct"
 	logcache "code.cloudfoundry.org/log-cache"
 	"code.cloudfoundry.org/log-cache/internal/metrics"
+	"google.golang.org/grpc"
 )
 
 func main() {
@@ -30,6 +31,9 @@ func main() {
 		logcache.WithSchedulerMetrics(metrics.New(expvar.NewMap("Scheduler"))),
 		logcache.WithSchedulerInterval(cfg.Interval),
 		logcache.WithSchedulerCount(cfg.Count),
+		logcache.WithSchedulerDialOpts(
+			grpc.WithTransportCredentials(cfg.TLS.Credentials("log-cache")),
+		),
 	)
 
 	sched.Start()

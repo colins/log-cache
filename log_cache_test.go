@@ -43,7 +43,6 @@ var _ = Describe("LogCache", func() {
 		spyMetrics := newSpyMetrics()
 		cache := logcache.New(
 			logcache.WithAddr("127.0.0.1:0"),
-			logcache.WithClustered(0, []string{"my-addr"}),
 			logcache.WithMetrics(spyMetrics),
 			logcache.WithServerOpts(
 				grpc.Creds(credentials.NewTLS(tlsConfig)),
@@ -61,7 +60,7 @@ var _ = Describe("LogCache", func() {
 
 		_, err = orchClient.SetRanges(context.Background(), &rpc.SetRangesRequest{
 			Ranges: map[string]*rpc.Ranges{
-				"my-addr": &rpc.Ranges{
+				cache.Addr(): &rpc.Ranges{
 					Ranges: []*rpc.Range{
 						{Start: 0, End: 18446744073709551615},
 					},
@@ -112,7 +111,7 @@ var _ = Describe("LogCache", func() {
 
 		cache := logcache.New(
 			logcache.WithAddr("127.0.0.1:0"),
-			logcache.WithClustered(0, []string{"my-addr", peerAddr},
+			logcache.WithDialOpts(
 				grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)),
 			),
 			logcache.WithServerOpts(
@@ -131,7 +130,7 @@ var _ = Describe("LogCache", func() {
 
 		_, err = orchClient.SetRanges(context.Background(), &rpc.SetRangesRequest{
 			Ranges: map[string]*rpc.Ranges{
-				"my-addr": &rpc.Ranges{
+				cache.Addr(): &rpc.Ranges{
 					Ranges: []*rpc.Range{
 						{Start: 0, End: 9223372036854775807, Term: 2},
 					},
@@ -180,7 +179,7 @@ var _ = Describe("LogCache", func() {
 
 		cache := logcache.New(
 			logcache.WithAddr("127.0.0.1:0"),
-			logcache.WithClustered(0, []string{"my-addr", peerAddr},
+			logcache.WithDialOpts(
 				grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)),
 			),
 			logcache.WithServerOpts(
@@ -198,7 +197,7 @@ var _ = Describe("LogCache", func() {
 
 		_, err = orchClient.SetRanges(context.Background(), &rpc.SetRangesRequest{
 			Ranges: map[string]*rpc.Ranges{
-				"my-addr": &rpc.Ranges{
+				cache.Addr(): &rpc.Ranges{
 					Ranges: []*rpc.Range{
 						{Start: 0, End: 9223372036854775807, Term: 2},
 
@@ -231,7 +230,7 @@ var _ = Describe("LogCache", func() {
 	It("accepts envelopes from peers", func() {
 		cache := logcache.New(
 			logcache.WithAddr("127.0.0.1:0"),
-			logcache.WithClustered(0, []string{"my-addr", "other-addr"},
+			logcache.WithDialOpts(
 				grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)),
 			),
 			logcache.WithServerOpts(
@@ -250,7 +249,7 @@ var _ = Describe("LogCache", func() {
 
 		_, err = orchClient.SetRanges(context.Background(), &rpc.SetRangesRequest{
 			Ranges: map[string]*rpc.Ranges{
-				"my-addr": &rpc.Ranges{
+				cache.Addr(): &rpc.Ranges{
 					Ranges: []*rpc.Range{
 						{Start: 0, End: 18446744073709551615},
 					},
@@ -301,7 +300,7 @@ var _ = Describe("LogCache", func() {
 
 		cache := logcache.New(
 			logcache.WithAddr("127.0.0.1:0"),
-			logcache.WithClustered(0, []string{"my-addr", peerAddr},
+			logcache.WithDialOpts(
 				grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)),
 			),
 			logcache.WithServerOpts(
@@ -321,7 +320,7 @@ var _ = Describe("LogCache", func() {
 
 		_, err = orchClient.SetRanges(context.Background(), &rpc.SetRangesRequest{
 			Ranges: map[string]*rpc.Ranges{
-				"my-addr": &rpc.Ranges{
+				cache.Addr(): &rpc.Ranges{
 					Ranges: []*rpc.Range{
 						{Start: 0, End: 9223372036854775807, Term: 2},
 
@@ -372,7 +371,7 @@ var _ = Describe("LogCache", func() {
 		myAddr := "127.0.0.1:0"
 		lc := logcache.New(
 			logcache.WithAddr(myAddr),
-			logcache.WithClustered(0, []string{myAddr, peerAddr},
+			logcache.WithDialOpts(
 				grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)),
 			),
 			logcache.WithServerOpts(
@@ -393,7 +392,7 @@ var _ = Describe("LogCache", func() {
 
 		_, err = orchClient.SetRanges(context.Background(), &rpc.SetRangesRequest{
 			Ranges: map[string]*rpc.Ranges{
-				myAddr: &rpc.Ranges{
+				lc.Addr(): &rpc.Ranges{
 					Ranges: []*rpc.Range{
 						{Start: 0, End: 9223372036854775807, Term: 2},
 
