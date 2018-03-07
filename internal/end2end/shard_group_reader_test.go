@@ -15,7 +15,7 @@ import (
 	"google.golang.org/grpc"
 )
 
-var _ = Describe("GroupReader", func() {
+var _ = Describe("ShardGroupReader", func() {
 	var (
 		// Run is incremented for each spec. It is used to set the port
 		// numbers.
@@ -23,12 +23,12 @@ var _ = Describe("GroupReader", func() {
 		addrs    []string
 		logCache *logcache.LogCache
 
-		node1     *logcache.GroupReader
-		node2     *logcache.GroupReader
+		node1     *logcache.ShardGroupReader
+		node2     *logcache.ShardGroupReader
 		scheduler *logcache.Scheduler
 
-		client1  *gologcache.GroupReaderClient
-		client2  *gologcache.GroupReaderClient
+		client1  *gologcache.ShardGroupReaderClient
+		client2  *gologcache.ShardGroupReaderClient
 		lcClient *gologcache.Client
 	)
 
@@ -64,20 +64,20 @@ var _ = Describe("GroupReader", func() {
 		scheduler.Start()
 
 		lcClient = gologcache.NewClient(addr, gologcache.WithViaGRPC(grpc.WithInsecure()))
-		client1 = gologcache.NewGroupReaderClient(addrs[0], gologcache.WithViaGRPC(grpc.WithInsecure()))
-		client2 = gologcache.NewGroupReaderClient(addrs[1], gologcache.WithViaGRPC(grpc.WithInsecure()))
+		client1 = gologcache.NewShardGroupReaderClient(addrs[0], gologcache.WithViaGRPC(grpc.WithInsecure()))
+		client2 = gologcache.NewShardGroupReaderClient(addrs[1], gologcache.WithViaGRPC(grpc.WithInsecure()))
 	})
 
 	It("keeps track of groups", func() {
-		go func(client1, client2 *gologcache.GroupReaderClient) {
+		go func(client1, client2 *gologcache.ShardGroupReaderClient) {
 			for range time.Tick(25 * time.Millisecond) {
-				client1.AddToGroup(context.Background(), "some-name", "a")
-				client2.AddToGroup(context.Background(), "some-name", "b")
+				client1.SetShardGroup(context.Background(), "some-name", "a")
+				client2.SetShardGroup(context.Background(), "some-name", "b")
 			}
 		}(client1, client2)
 
 		Eventually(func() []string {
-			m, err := client1.Group(context.Background(), "some-name")
+			m, err := client1.ShardGroup(context.Background(), "some-name")
 			if err != nil {
 				return nil
 			}
@@ -87,10 +87,10 @@ var _ = Describe("GroupReader", func() {
 	})
 
 	It("reads from several source IDs", func() {
-		go func(client1, client2 *gologcache.GroupReaderClient) {
+		go func(client1, client2 *gologcache.ShardGroupReaderClient) {
 			for {
-				client1.AddToGroup(context.Background(), "some-name", "a")
-				client2.AddToGroup(context.Background(), "some-name", "b")
+				client1.SetShardGroup(context.Background(), "some-name", "a")
+				client2.SetShardGroup(context.Background(), "some-name", "b")
 			}
 		}(client1, client2)
 
@@ -127,10 +127,10 @@ var _ = Describe("GroupReader", func() {
 	})
 
 	It("shards data via requester_id", func() {
-		go func(client1, client2 *gologcache.GroupReaderClient) {
+		go func(client1, client2 *gologcache.ShardGroupReaderClient) {
 			for range time.Tick(25 * time.Millisecond) {
-				client1.AddToGroup(context.Background(), "some-name", "a")
-				client2.AddToGroup(context.Background(), "some-name", "b")
+				client1.SetShardGroup(context.Background(), "some-name", "a")
+				client2.SetShardGroup(context.Background(), "some-name", "b")
 			}
 		}(client1, client2)
 
@@ -150,7 +150,7 @@ var _ = Describe("GroupReader", func() {
 			}
 		}(logCache.Addr())
 
-		consume := func(client *gologcache.GroupReaderClient, c chan<- []string, requesterID uint64) {
+		consume := func(client *gologcache.ShardGroupReaderClient, c chan<- []string, requesterID uint64) {
 			var lastTimestamp int64
 			for {
 				envelopes, _ := client.Read(
