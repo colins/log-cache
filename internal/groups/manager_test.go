@@ -60,7 +60,7 @@ var _ = Describe("Manager", func() {
 		r, err = m.SetShardGroup(context.Background(), &logcache_v1.SetShardGroupRequest{
 			Name: "b",
 			SubGroup: &logcache_v1.GroupedSourceIds{
-				SourceIds: []string{"1", "2"},
+				SourceIds: []string{"4", "5"},
 			},
 		})
 		Expect(err).ToNot(HaveOccurred())
@@ -74,6 +74,14 @@ var _ = Describe("Manager", func() {
 		Expect(resp.SubGroups).To(ConsistOf(
 			&logcache_v1.GroupedSourceIds{SourceIds: []string{"1", "2"}},
 			&logcache_v1.GroupedSourceIds{SourceIds: []string{"3"}},
+		))
+
+		resp, err = m.ShardGroup(context.Background(), &logcache_v1.ShardGroupRequest{
+			Name: "b",
+		})
+		Expect(err).ToNot(HaveOccurred())
+		Expect(resp.SubGroups).To(ConsistOf(
+			&logcache_v1.GroupedSourceIds{SourceIds: []string{"4", "5"}},
 		))
 	})
 

@@ -16,7 +16,7 @@ import (
 // Manager manages groups. It implements logcache_v1.GroupReader.
 type Manager struct {
 	mu      sync.RWMutex
-	m       map[string]groupInfo
+	groups  map[string]*Group
 	s       DataStorage
 	timeout time.Duration
 }
@@ -51,7 +51,7 @@ type DataStorage interface {
 // NewManager creates a new Manager to manage groups.
 func NewManager(s DataStorage, timeout time.Duration) *Manager {
 	return &Manager{
-		m:       make(map[string]groupInfo),
+		groups:  make(map[string]*Group),
 		s:       s,
 		timeout: timeout,
 	}
@@ -76,36 +76,34 @@ func (m *Manager) SetShardGroup(ctx context.Context, r *logcache_v1.SetShardGrou
 		}
 	}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	gi, ok := m.m[r.Name]
-	if !ok {
-		gi.groupedSourceIDs = make(map[string]subGroupInfo)
-		gi.requesterIDs = make(map[uint64]time.Time)
-	}
-
 	// Ensure that sourceID is not already tracked.
 	sourceIDs := r.GetSubGroup().GetSourceIds()
 	sort.Strings(sourceIDs)
 	allSourceIDs := strings.Join(sourceIDs, ",")
 
-	if subGroup, ok := gi.groupedSourceIDs[allSourceIDs]; ok {
-		m.resetExpire(subGroup.t)
-		return &logcache_v1.SetShardGroupResponse{}, nil
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	g, ok := m.groups[r.GetName()]
+	if !ok {
+		g = NewGroup(r.GetName(), nil, m.timeout)
 	}
 
-	sg := subGroupInfo{
-		sourceIDs: sourceIDs,
-		t: time.AfterFunc(m.timeout, func() {
-			m.removeFromGroup(r.GetName(), allSourceIDs, r.GetSubGroup().GetSourceIds())
-		}),
+	sg, ok := g.subGroups[allSourceIDs]
+	if !ok {
+		sg = &SubGroup{
+			sourceIDs: sourceIDs,
+			t: time.AfterFunc(m.timeout, func() {
+				m.removeFromGroup(r.GetName(), allSourceIDs, sourceIDs)
+			}),
+		}
+		g.Set(sg)
+
+		m.groups[r.GetName()] = g
+		m.s.Add(r.GetName(), sourceIDs)
 	}
-	gi.groupedSourceIDs[allSourceIDs] = sg
 
-	m.m[r.Name] = gi
-	m.s.Add(r.GetName(), r.GetSubGroup().GetSourceIds())
-
+	m.resetExpire(sg.t)
 	return &logcache_v1.SetShardGroupResponse{}, nil
 }
 
@@ -113,19 +111,19 @@ func (m *Manager) removeFromGroup(name, allSourceIDs string, sourceIDs []string)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	a, ok := m.m[name]
+	g, ok := m.groups[name]
 	if !ok {
 		return
 	}
 
-	if _, ok := a.groupedSourceIDs[allSourceIDs]; ok {
-		delete(a.groupedSourceIDs, allSourceIDs)
+	if _, ok := g.subGroups[allSourceIDs]; ok {
+		delete(g.subGroups, allSourceIDs)
 		m.s.Remove(name, sourceIDs)
 	}
-	m.m[name] = a
+	m.groups[name] = g
 
-	if len(m.m[name].groupedSourceIDs) == 0 {
-		delete(m.m, name)
+	if len(g.SourceIDs()) == 0 {
+		delete(m.groups, name)
 	}
 }
 
@@ -136,7 +134,7 @@ func (m *Manager) Read(ctx context.Context, r *logcache_v1.ShardGroupReadRequest
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	gi, ok := m.m[r.Name]
+	gi, ok := m.groups[r.Name]
 	if !ok {
 		return nil, grpc.Errorf(codes.NotFound, "unknown group name: %s", r.GetName())
 	}
@@ -149,9 +147,9 @@ func (m *Manager) Read(ctx context.Context, r *logcache_v1.ShardGroupReadRequest
 	gi.requesterIDs[r.RequesterId] = time.Now()
 
 	// Check for expired requesters
-	for k, v := range m.m[r.Name].requesterIDs {
+	for k, v := range m.groups[r.Name].requesterIDs {
 		if time.Since(v) >= m.timeout {
-			delete(m.m[r.Name].requesterIDs, k)
+			delete(m.groups[r.Name].requesterIDs, k)
 			m.s.RemoveRequester(r.Name, k)
 		}
 	}
@@ -196,17 +194,20 @@ func (m *Manager) Read(ctx context.Context, r *logcache_v1.ShardGroupReadRequest
 func (m *Manager) ShardGroup(ctx context.Context, r *logcache_v1.ShardGroupRequest, _ ...grpc.CallOption) (*logcache_v1.ShardGroupResponse, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	a := m.m[r.Name]
+	g, ok := m.groups[r.Name]
+	if !ok {
+		return &logcache_v1.ShardGroupResponse{}, nil
+	}
 
 	var reqIds []uint64
-	for k := range a.requesterIDs {
+	for k := range g.requesterIDs {
 		reqIds = append(reqIds, k)
 	}
 
 	var subGroups []*logcache_v1.GroupedSourceIds
-	for _, g := range a.groupedSourceIDs {
+	for _, sg := range g.subGroups {
 		subGroups = append(subGroups, &logcache_v1.GroupedSourceIds{
-			SourceIds: g.sourceIDs,
+			SourceIds: sg.sourceIDs,
 		})
 	}
 
@@ -222,7 +223,7 @@ func (m *Manager) ListGroups() []string {
 	defer m.mu.RUnlock()
 
 	var results []string
-	for name := range m.m {
+	for name := range m.groups {
 		results = append(results, name)
 	}
 
@@ -230,18 +231,10 @@ func (m *Manager) ListGroups() []string {
 }
 
 func (m *Manager) resetExpire(t *time.Timer) {
+	// cancel the timer
 	if !t.Stop() && len(t.C) != 0 {
 		<-t.C
 	}
+	// then reset it
 	t.Reset(m.timeout)
-}
-
-type groupInfo struct {
-	groupedSourceIDs map[string]subGroupInfo
-	requesterIDs     map[uint64]time.Time
-}
-
-type subGroupInfo struct {
-	t         *time.Timer
-	sourceIDs []string
 }
