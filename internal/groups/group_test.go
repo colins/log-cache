@@ -17,7 +17,7 @@ var _ = Describe("Group", func() {
 		Expect(g.SourceIDs()).To(Equal([]string{"a", "b", "c"}))
 	})
 
-	It("adds source IDs to the group", func() {
+	It("adds subgroup to the group", func() {
 		g := createGroup("", []string{"a", "b", "c"}, time.Minute)
 		Expect(g.SourceIDs()).To(ConsistOf("a", "b", "c"))
 
