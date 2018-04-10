@@ -8,7 +8,7 @@ import (
 
 type Group struct {
 	smu       sync.RWMutex
-	subGroups map[string]*SubGroup
+	subGroups map[string]*subGroup
 
 	rmu          sync.RWMutex
 	requesterIDs map[uint64]time.Time
@@ -16,14 +16,14 @@ type Group struct {
 	name string
 }
 
-func NewGroup(name string, subGroup *SubGroup, ttl time.Duration) *Group {
+func NewGroup(name string, sg *subGroup, ttl time.Duration) *Group {
 	g := &Group{
 		name:         name,
-		subGroups:    make(map[string]*SubGroup),
+		subGroups:    make(map[string]*subGroup),
 		requesterIDs: make(map[uint64]time.Time),
 	}
-	if subGroup != nil {
-		g.Set(subGroup)
+	if sg != nil {
+		g.AddSubGroup(sg)
 	}
 
 	return g
@@ -33,7 +33,7 @@ func (g *Group) Name() string {
 	return g.name
 }
 
-func (g *Group) Set(sg *SubGroup) {
+func (g *Group) AddSubGroup(sg *subGroup) {
 	groupID := strings.Join(sg.sourceIDs, ",")
 
 	g.smu.Lock()
@@ -67,13 +67,13 @@ func (g *Group) RequesterIDs() []uint64 {
 	return values
 }
 
-type SubGroup struct {
+type subGroup struct {
 	sourceIDs []string
 	t         *time.Timer
 }
 
-func NewSubGroup(sourceIDs ...string) *SubGroup {
-	return &SubGroup{
+func NewSubGroup(sourceIDs ...string) *subGroup {
+	return &subGroup{
 		sourceIDs: sourceIDs,
 	}
 }

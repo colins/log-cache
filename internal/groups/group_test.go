@@ -21,7 +21,7 @@ var _ = Describe("Group", func() {
 		g := createGroup("", []string{"a", "b", "c"}, time.Minute)
 		Expect(g.SourceIDs()).To(ConsistOf("a", "b", "c"))
 
-		g.Set(groups.NewSubGroup("d", "e", "f"))
+		g.AddSubGroup(groups.NewSubGroup("d", "e", "f"))
 		Expect(g.SourceIDs()).To(ConsistOf("a", "b", "c", "d", "e", "f"))
 	})
 
@@ -53,7 +53,7 @@ var _ = Describe("Group", func() {
 
 		go func() {
 			for i := 0; i < 1000; i++ {
-				g.Set(groups.NewSubGroup("d"))
+				g.AddSubGroup(groups.NewSubGroup("d"))
 				g.AddRequesterID(1)
 
 				time.Sleep(2 * time.Millisecond)

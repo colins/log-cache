@@ -91,13 +91,13 @@ func (m *Manager) SetShardGroup(ctx context.Context, r *logcache_v1.SetShardGrou
 
 	sg, ok := g.subGroups[allSourceIDs]
 	if !ok {
-		sg = &SubGroup{
+		sg = &subGroup{
 			sourceIDs: sourceIDs,
 			t: time.AfterFunc(m.timeout, func() {
 				m.removeFromGroup(r.GetName(), allSourceIDs, sourceIDs)
 			}),
 		}
-		g.Set(sg)
+		g.AddSubGroup(sg)
 
 		m.groups[r.GetName()] = g
 		m.s.Add(r.GetName(), sourceIDs)
