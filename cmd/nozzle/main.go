@@ -1,19 +1,15 @@
 package main
 
 import (
-	"expvar"
-	"fmt"
+	"context"
 	"log"
-	"net/http"
 	_ "net/http/pprof"
-	"os"
+	"time"
 
 	envstruct "code.cloudfoundry.org/go-envstruct"
-	logcache "code.cloudfoundry.org/log-cache"
-	"code.cloudfoundry.org/log-cache/internal/metrics"
+	"code.cloudfoundry.org/go-log-cache/rpc/logcache_v1"
+	"code.cloudfoundry.org/go-loggregator/rpc/loggregator_v2"
 	"google.golang.org/grpc"
-
-	loggregator "code.cloudfoundry.org/go-loggregator"
 )
 
 func main() {
@@ -27,39 +23,44 @@ func main() {
 
 	envstruct.WriteReport(cfg)
 
-	tlsCfg, err := loggregator.NewEgressTLSConfig(
-		cfg.LogsProviderTLS.LogProviderCA,
-		cfg.LogsProviderTLS.LogProviderCert,
-		cfg.LogsProviderTLS.LogProviderKey,
-	)
+	conn, err := grpc.Dial(cfg.LogCacheAddr, grpc.WithTransportCredentials(
+		cfg.LogCacheTLS.Credentials("log-cache"),
+	))
 	if err != nil {
-		log.Fatalf("invalid LogsProviderTLS configuration: %s", err)
+		log.Fatalf("failed to dial %s: %s", cfg.LogCacheAddr, err)
 	}
+	client := logcache_v1.NewIngressClient(conn)
 
-	loggr := log.New(os.Stderr, "[LOGGR] ", log.LstdFlags)
-	streamConnector := loggregator.NewEnvelopeStreamConnector(
-		cfg.LogProviderAddr,
-		tlsCfg,
-		loggregator.WithEnvelopeStreamLogger(loggr),
-		loggregator.WithEnvelopeStreamBuffer(10000, func(missed int) {
-			loggr.Printf("dropped %d envelope batches", missed)
-		}),
-	)
+	for {
+		batch := []*loggregator_v2.Envelope{
+			{
+				Timestamp:  time.Now().UnixNano(),
+				SourceId:   "jasonk",
+				InstanceId: "jason",
+				Tags: map[string]string{
+					"foo": "bar",
+				},
+				Message: &loggregator_v2.Envelope_Log{
+					Log: &loggregator_v2.Log{
+						Payload: []byte("warren is cool"),
+						Type:    loggregator_v2.Log_ERR,
+					},
+				},
+			},
+		}
+		log.Print("writing a batch")
+		ctx, _ := context.WithTimeout(context.Background(), 10*time.Second)
+		_, err := client.Send(ctx, &logcache_v1.SendRequest{
+			// LocalOnly: true,
+			Envelopes: &loggregator_v2.EnvelopeBatch{
+				Batch: batch,
+			},
+		})
 
-	nozzle := logcache.NewNozzle(
-		streamConnector,
-		cfg.LogCacheAddr,
-		logcache.WithNozzleLogger(log.New(os.Stderr, "", log.LstdFlags)),
-		logcache.WithNozzleMetrics(metrics.New(expvar.NewMap("Nozzle"))),
-		logcache.WithNozzleDialOpts(
-			grpc.WithTransportCredentials(
-				cfg.LogCacheTLS.Credentials("log-cache"),
-			),
-		),
-	)
-
-	go nozzle.Start()
-
-	// health endpoints (pprof and expvar)
-	log.Printf("Health: %s", http.ListenAndServe(fmt.Sprintf("localhost:%d", cfg.HealthPort), nil))
+		if err != nil {
+			log.Printf("failed to write envelopes: %s", err)
+			continue
+		}
+		time.Sleep(time.Second)
+	}
 }
