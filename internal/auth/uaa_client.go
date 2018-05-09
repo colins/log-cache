@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/bluele/gcache"
 )
 
 type HTTPClient interface {
@@ -20,6 +22,7 @@ type UAAClient struct {
 	uaa          *url.URL
 	client       string
 	clientSecret string
+	cache        gcache.Cache
 }
 
 func NewUAAClient(uaaAddr, client, clientSecret string, httpClient HTTPClient) *UAAClient {
@@ -34,13 +37,26 @@ func NewUAAClient(uaaAddr, client, clientSecret string, httpClient HTTPClient) *
 		client:       client,
 		clientSecret: clientSecret,
 		httpClient:   httpClient,
+		cache:        gcache.New(100).ARC().Build(),
 	}
 }
 
-func (c *UAAClient) Read(token string) (Oauth2Client, error) {
+func (c *UAAClient) Read(token string) (oauthClient Oauth2Client, rerr error) {
 	if token == "" {
 		return Oauth2Client{}, errors.New("missing token")
 	}
+
+	value, err := c.cache.Get(token)
+	if err == nil {
+		return value.(Oauth2Client), nil
+	}
+
+	defer func() {
+		if rerr != nil {
+			return
+		}
+		c.cache.Set(token, oauthClient)
+	}()
 
 	form := url.Values{
 		"token": {trimBearer(token)},

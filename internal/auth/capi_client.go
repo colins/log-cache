@@ -6,12 +6,15 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+
+	"github.com/bluele/gcache"
 )
 
 type CAPIClient struct {
 	client       HTTPClient
 	capi         string
 	externalCapi string
+	cache        gcache.Cache
 }
 
 func NewCAPIClient(capiAddr, externalCapiAddr string, client HTTPClient) *CAPIClient {
@@ -29,10 +32,21 @@ func NewCAPIClient(capiAddr, externalCapiAddr string, client HTTPClient) *CAPICl
 		client:       client,
 		capi:         capiAddr,
 		externalCapi: externalCapiAddr,
+		cache:        gcache.New(100).ARC().Build(),
 	}
 }
 
-func (c *CAPIClient) IsAuthorized(sourceID, token string) bool {
+func (c *CAPIClient) IsAuthorized(sourceID, token string) (authorized bool) {
+	combined := sourceID + token
+	value, err := c.cache.Get(combined)
+	if err == nil {
+		return value.(bool)
+	}
+
+	defer func() {
+		c.cache.Set(combined, authorized)
+	}()
+
 	uri := fmt.Sprintf("%s/internal/v4/log_access/%s", c.capi, sourceID)
 	req, err := http.NewRequest(http.MethodGet, uri, nil)
 	if err != nil {
