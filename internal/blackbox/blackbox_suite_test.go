@@ -1,4 +1,4 @@
-package proxy_test
+package blackbox_test
 
 import (
 	. "github.com/onsi/ginkgo"
@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestProxy(t *testing.T) {
+func TestBlackbox(t *testing.T) {
 	RegisterFailHandler(Fail)
-	RunSpecs(t, "Proxy Suite")
+	RunSpecs(t, "Blackbox Suite")
 }

@@ -189,6 +189,12 @@ func WithDescending() ReadOption {
 	}
 }
 
+func WithNameFilter(nameFilter string) ReadOption {
+	return func(u *url.URL, q url.Values) {
+		q.Set("name_filter", nameFilter)
+	}
+}
+
 func (c *Client) grpcRead(ctx context.Context, sourceID string, start time.Time, opts []ReadOption) ([]*loggregator_v2.Envelope, error) {
 	u := &url.URL{}
 	q := u.Query()
@@ -214,6 +220,10 @@ func (c *Client) grpcRead(ctx context.Context, sourceID string, start time.Time,
 		req.EnvelopeTypes = append(req.EnvelopeTypes,
 			logcache_v1.EnvelopeType(logcache_v1.EnvelopeType_value[et]),
 		)
+	}
+
+	if v, ok := q["name_filter"]; ok {
+		req.NameFilter = v[0]
 	}
 
 	if _, ok := q["descending"]; ok {
@@ -282,7 +292,7 @@ func (c *Client) getBaseApiPath(ctx context.Context) (string, error) {
 		return c.baseApiPath, nil
 	}
 
-	logCacheVersion, err := c.logCacheVersion(ctx)
+	logCacheVersion, err := c.LogCacheVersion(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -294,7 +304,7 @@ func (c *Client) getBaseApiPath(ctx context.Context) (string, error) {
 	return "/v1", nil
 }
 
-func (c *Client) logCacheVersion(ctx context.Context) (semver.Version, error) {
+func (c *Client) LogCacheVersion(ctx context.Context) (semver.Version, error) {
 	u, err := url.Parse(c.addr)
 	if err != nil {
 		return semver.Version{}, err
