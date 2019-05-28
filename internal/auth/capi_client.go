@@ -123,7 +123,6 @@ func (c *CAPIClient) AvailableSourceIDs(authToken string) []string {
 		if nextPageURL == nil {
 			break
 		}
-
 		req.URL = nextPageURL
 	}
 
@@ -235,8 +234,6 @@ func (c *CAPIClient) doResourceRequest(req *http.Request, authToken string, metr
 		if err != nil {
 			return apps.Resources, nextPageURL, fmt.Errorf("failed to parse URL %s: %s", apps.Pagination.Next.Href, err)
 		}
-		// Ensure we continue to use the external CAPI hostname
-		nextPageURL.Scheme, nextPageURL.Host = req.URL.Scheme, req.URL.Host
 	}
 
 	return apps.Resources, nextPageURL, nil

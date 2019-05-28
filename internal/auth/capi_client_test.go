@@ -150,12 +150,11 @@ var _ = Describe("CAPIClient", func() {
 		It("iterates through all pages returned by /v3/apps", func() {
 			tc := setup()
 
-			By("replacing the scheme and host to match original requests' capi addr")
 			tc.capiClient.resps = []response{
 				{status: http.StatusOK, body: []byte(`{
                   "pagination": {
                     "next": {
-                      "href": "https://internal.capi.com/v3/apps?page=2&per_page=1"
+                      "href": "https://external.capi.com/v3/apps?page=2&per_page=1"
                     }
                   },
                   "resources": [
@@ -173,8 +172,10 @@ var _ = Describe("CAPIClient", func() {
 			sourceIDs := tc.client.AvailableSourceIDs("some-token")
 			Expect(tc.capiClient.requests).To(HaveLen(3))
 			secondPageReq := tc.capiClient.requests[1]
+			Expect(secondPageReq.URL.Path).To(Equal("/v3/apps"))
+			Expect(secondPageReq.URL.Query().Get("page")).To(Equal("2"))
+			Expect(secondPageReq.URL.Query().Get("per_page")).To(Equal("1"))
 
-			Expect(secondPageReq.URL.String()).To(Equal("http://external.capi.com/v3/apps?page=2&per_page=1"))
 			Expect(sourceIDs).To(ConsistOf("app-1", "app-2"))
 		})
 
@@ -186,7 +187,7 @@ var _ = Describe("CAPIClient", func() {
 				{status: http.StatusOK, body: []byte(`{
                   "pagination": {
                     "next": {
-                      "href": "https://internal.capi.com/v3/service_instances?page=2&per_page=2"
+                      "href": "https://external.capi.com/v3/service_instances?page=2&per_page=2"
                     }
                   },
                   "resources": [
@@ -203,7 +204,9 @@ var _ = Describe("CAPIClient", func() {
 			sourceIDs := tc.client.AvailableSourceIDs("some-token")
 			Expect(tc.capiClient.requests).To(HaveLen(3))
 			secondPageReq := tc.capiClient.requests[2]
-			Expect(secondPageReq.URL.String()).To(Equal("http://external.capi.com/v3/service_instances?page=2&per_page=2"))
+			Expect(secondPageReq.URL.Path).To(Equal("/v3/service_instances"))
+			Expect(secondPageReq.URL.Query().Get("page")).To(Equal("2"))
+			Expect(secondPageReq.URL.Query().Get("per_page")).To(Equal("2"))
 
 			Expect(sourceIDs).To(ConsistOf("service-1", "service-2", "service-3"))
 		})
@@ -325,7 +328,7 @@ var _ = Describe("CAPIClient", func() {
 				{status: http.StatusOK, body: []byte(`{
                   "pagination": {
                     "next": {
-                      "href": "https://internal.capi.com/v3/apps?page=2&per_page=2"
+                      "href": "https://external.capi.com/v3/apps?page=2&per_page=2"
                     }
                   },
                   "resources": [
@@ -344,7 +347,9 @@ var _ = Describe("CAPIClient", func() {
 
 			Expect(tc.capiClient.requests).To(HaveLen(2))
 			secondPageReq := tc.capiClient.requests[1]
-			Expect(secondPageReq.URL.String()).To(Equal("http://external.capi.com/v3/apps?page=2&per_page=2"))
+			Expect(secondPageReq.URL.Path).To(Equal("/v3/apps"))
+			Expect(secondPageReq.URL.Query().Get("page")).To(Equal("2"))
+			Expect(secondPageReq.URL.Query().Get("per_page")).To(Equal("2"))
 			Expect(sourceIds).To(HaveKeyWithValue("app-name", ConsistOf("app-0", "app-1", "app-2")))
 		})
 
